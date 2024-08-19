@@ -3,7 +3,9 @@ package main
 import (
 	"encoding/hex"
 	"fmt"
+	"log"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -52,31 +54,52 @@ type DNSResponse struct {
 }
 
 func server(nameToIP map[string][4]uint8) {
-	serverAddress, err := net.ResolveUDPAddr("udp", "127.0.0.1:8080")
+	// Разрешение адреса TCP
+	file, err := os.OpenFile("app.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	if err != nil {
+		log.Fatal("Failed to open log file:", err)
+	}
+	log.SetOutput(file)
+
+	serverAddress, err := net.ResolveTCPAddr("tcp", "0.0.0.0:1234")
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
-	connection, err := net.ListenUDP("udp", serverAddress)
+	log.Println("Start connection on 127.0.0.1:1234")
+	// Прослушивание TCP-соединений
+	listener, err := net.ListenTCP("tcp", serverAddress)
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
-	defer connection.Close()
+	defer listener.Close()
 
 	for {
-		inputBytes := make([]byte, 512)
-		_, clientAddress, err := connection.ReadFromUDP(inputBytes)
+		// Принятие нового подключения
+		connection, err := listener.Accept()
 		if err != nil {
 			fmt.Println(err)
 			continue
 		}
-		fmt.Printf("[%s] Received message from %s: ", time.Now().Format("2006-01-02 15:04:05"), clientAddress)
-		fmt.Println(string(inputBytes))
+		defer connection.Close()
+
+		// Чтение данных от клиента
+		inputBytes := make([]byte, 512)
+		_, err = connection.Read(inputBytes)
+		if err != nil {
+			fmt.Println(err)
+			continue
+		}
+
+		clientAddress := connection.RemoteAddr().String()
+		log.Printf("[%s] Received message from %s: %s", time.Now().Format("2006-01-02 15:04:05"), clientAddress, string(inputBytes))
 		request, _ := DNSRequestFromHex(string(inputBytes))
 		response := DNSResponseConst(request, nameToIP)
-		// отправляем сообщение клиенту
-		_, err = connection.WriteToUDP([]byte(response.DNSResponseToHex()), clientAddress)
+		fmt.Println(response.QNAME)
+
+		// Отправка ответа клиенту
+		_, err = connection.Write([]byte(response.DNSResponseToHex()))
 		if err != nil {
 			fmt.Println(err)
 			continue
@@ -85,33 +108,43 @@ func server(nameToIP map[string][4]uint8) {
 }
 
 func client(message string) {
-	serverAddress, err := net.ResolveUDPAddr("udp", "127.0.0.1:8080")
+	// Разрешение TCP-адреса сервера
+	serverAddress, err := net.ResolveTCPAddr("tcp", "127.0.0.1:1234")
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
-	connection, err := net.DialUDP("udp", nil, serverAddress)
+
+	// Установка TCP-соединения с сервером
+	connection, err := net.DialTCP("tcp", nil, serverAddress)
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
 	defer connection.Close()
 
+	// Отправка сообщения серверу
 	_, err = connection.Write([]byte(message))
 	if err != nil {
 		fmt.Println(err)
-
+		return
 	}
 
-	inputBytes := make([]byte, 1024)
+	// Чтение ответа от сервера
+	inputBytes := make([]byte, 512)
 	_, err = connection.Read(inputBytes)
 	if err != nil {
 		fmt.Println(err)
-
+		return
 	}
 	fmt.Println(string(inputBytes))
-	time.Sleep(3 * time.Second)
 
+	// Обработка ответа сервера
+	resp := DNSResponseFromHex(string(inputBytes))
+	fmt.Println(resp.RDATA)
+
+	// Задержка перед завершением
+	time.Sleep(3 * time.Second)
 }
 
 func (d *DNSRequest) DNSrequestToHex() string {
@@ -228,7 +261,6 @@ func DNSRequestFromHex(hexStr string) (*DNSRequest, error) {
 	}
 	d.QNAME = strings.Join(qnameParts, ".")
 
-	// Parse QTYPE
 	qtype, err := hexToUint16(hexStr[offset : offset+4])
 	if err != nil {
 		return nil, err
@@ -236,7 +268,6 @@ func DNSRequestFromHex(hexStr string) (*DNSRequest, error) {
 	d.QTYPE = uint8(qtype)
 	offset += 4
 
-	// Parse QCLASS
 	qclass, err := hexToUint16(hexStr[offset : offset+4])
 	if err != nil {
 		return nil, err
@@ -253,7 +284,7 @@ func DNSResponseConst(req *DNSRequest, nameToIP map[string][4]uint8) DNSResponse
 
 	response := Response{
 		NAME:     req.Request.QNAME,
-		TYPE:     1, // A record
+		TYPE:     1,
 		CLASS:    uint16(req.Request.QCLASS),
 		TTL:      1,
 		RDLENGTH: 4,
@@ -431,11 +462,11 @@ func main() {
 	fmt.Scanf("%s", &clientDNSRequest.QNAME)
 	client(clientDNSRequest.DNSrequestToHex())
 	*/
-	/* for server
+	/* for server*/
 	var nameToIP = map[string][4]uint8{
 		"habr.com": {127, 0, 0, 1},
 	}
 
 	server(nameToIP)
-	*/
+
 }
